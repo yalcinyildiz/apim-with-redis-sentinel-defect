@@ -8,7 +8,8 @@
 2. [Architecture](#2-architecture)
 3. [Component Summary](#3-component-summary)
 4. [Prepare Local Environment](#4-prepare-local-environment)
-5. [Test](#5-test)
+5. [Test Functionality](#5-test-functionality)
+6. [Test Defect Scenario](#6-test-defect-scenario)
 
 ---
 

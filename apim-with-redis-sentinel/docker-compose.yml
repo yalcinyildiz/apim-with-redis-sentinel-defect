@@ -1,0 +1,266 @@
+#version: "3.7"
+
+services:
+  mysql:
+    image: mysql:8.0.36
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - ./conf/mysql/scripts:/docker-entrypoint-initdb.d
+      - ./conf/mysql/conf/my.cnf:/etc/mysql/mysql.conf.d/my.cnf
+      - mysql_data:/var/lib/mysql
+    ulimits:
+      nofile:
+        soft: 20000
+        hard: 40000
+    command: [--ssl=0]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "mysqladmin ping -uroot -proot && [ -f /var/lib/mysql/initialization-complete.flag ]"]
+      interval: 30s
+      timeout: 60s
+      retries: 5
+      start_period: 80s
+    networks:
+      - apim-redis-net
+
+  apim-cp:
+    build: dockerfiles/apim-cp
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:9763/services/Version"]
+      interval: 10s
+      start_period: 180s
+      retries: 20
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis-haproxy:
+        condition: service_started
+    volumes:
+      - ./conf/apim-cp:/home/wso2carbon/wso2-config-volume
+    ports:
+      - "9443:9443"
+      - "9763:9763"
+      - "8243:8243"
+      - "8280:8280"
+      - "5672:5672"
+      - "9711:9711"
+      - "9611:9611"
+    networks:
+      - apim-redis-net
+
+  apim-gateway:
+    build: dockerfiles/apim-gateway
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:9763/services/Version"]
+      interval: 10s
+      start_period: 180s
+      retries: 20
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis-haproxy:
+        condition: service_started
+      apim-cp:
+        condition: service_healthy
+    volumes:
+      - ./conf/apim-gateway:/home/wso2carbon/wso2-config-volume
+    ports:
+      - "8244:8243"
+      - "8281:8280"
+      - "9444:9443"
+      - "9764:9763"
+    networks:
+      - apim-redis-net
+
+  httpbin:
+    image: kennethreitz/httpbin
+    ports:
+      - "80:80"
+    networks:
+      - apim-redis-net
+  # ----------------------------
+  # Redis master / replicas (official redis image)
+  # ----------------------------
+  redis-master:
+    image: redis:8.4.0
+    restart: unless-stopped
+    volumes:
+      - ./conf/redis/redis-master.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "redis-cli -a redispass ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - apim-redis-net
+
+  redis-replica-1:
+    image: redis:8.4.0
+    restart: unless-stopped
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    volumes:
+      - ./conf/redis/redis-replica-1.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "redis-cli -a redispass ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - apim-redis-net
+
+  redis-replica-2:
+    image: redis:8.4.0
+    restart: unless-stopped
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    volumes:
+      - ./conf/redis/redis-replica-2.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "redis-cli -a redispass ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - apim-redis-net
+
+  # ----------------------------
+  # Sentinel (official redis image)
+  # ----------------------------
+  redis-sentinel-1:
+    image: redis:8.4.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica-1:
+        condition: service_healthy
+      redis-replica-2:
+        condition: service_healthy
+    volumes:
+      - ./conf/redis/sentinel.conf:/usr/local/etc/redis/sentinel.conf:ro
+      - ./conf/redis/start-sentinel.sh:/start-sentinel.sh:ro
+    environment:
+      - MASTER_HOST=redis-master
+      - SRC_CONF=/usr/local/etc/redis/sentinel.conf
+      - DST_CONF=/tmp/sentinel.conf
+    entrypoint: ["sh", "/start-sentinel.sh"]
+    ports:
+      - "26379:26379"
+    networks:
+      - apim-redis-net
+
+  redis-sentinel-2:
+    image: redis:8.4.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      redis-sentinel-1:
+        condition: service_started
+    volumes:
+      - ./conf/redis/sentinel.conf:/usr/local/etc/redis/sentinel.conf:ro
+      - ./conf/redis/start-sentinel.sh:/start-sentinel.sh:ro
+    environment:
+      - MASTER_HOST=redis-master
+      - SRC_CONF=/usr/local/etc/redis/sentinel.conf
+      - DST_CONF=/tmp/sentinel.conf
+    entrypoint: ["sh", "/start-sentinel.sh"]
+    networks:
+      - apim-redis-net
+
+  redis-sentinel-3:
+    image: redis:8.4.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      redis-sentinel-1:
+        condition: service_started
+    volumes:
+      - ./conf/redis/sentinel.conf:/usr/local/etc/redis/sentinel.conf:ro
+      - ./conf/redis/start-sentinel.sh:/start-sentinel.sh:ro
+    environment:
+      - MASTER_HOST=redis-master
+      - SRC_CONF=/usr/local/etc/redis/sentinel.conf
+      - DST_CONF=/tmp/sentinel.conf
+    entrypoint: ["sh", "/start-sentinel.sh"]
+    networks:
+      - apim-redis-net
+
+  # ----------------------------
+  # HAProxy (config in named volume)
+  # ----------------------------
+  redis-haproxy:
+    image: haproxy:3.3.1-alpine
+    restart: unless-stopped
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-sentinel-1:
+        condition: service_healthy
+      redis-sentinel-2:
+        condition: service_started
+      redis-sentinel-3:
+        condition: service_started
+      redis-haproxy-watcher:
+        condition: service_started
+    ports:
+      - "6380:6380"
+      - "8404:8404"
+    volumes:
+      - ./conf/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
+      - haproxy-run:/var/run
+    user: "0:0"
+    command: ["haproxy", "-f", "/usr/local/etc/haproxy/haproxy.cfg", "-W", "-db", "-p", "/var/run/haproxy.pid"]
+    networks:
+      - apim-redis-net
+
+  redis-haproxy-watcher:
+    image: redis:8.4.0
+    restart: unless-stopped
+    depends_on:
+#      - redis-haproxy
+      - redis-sentinel-1
+    environment:
+      - SENTINEL_HOST=redis-sentinel-1
+      - SENTINEL_PORT=26379
+      - MASTER_NAME=mymaster
+      - CHECK_INTERVAL=2
+      - HAPROXY_CFG=/usr/local/etc/haproxy/haproxy.cfg
+      - HAPROXY_PID=/var/run/haproxy.pid
+    volumes:
+      - ./conf/haproxy/sentinel-watcher.sh:/sentinel-watcher.sh:ro
+      - ./conf/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:rw
+      - haproxy-run:/var/run
+    entrypoint: ["sh", "-lc"]
+    command: ["sh /sentinel-watcher.sh"]
+    networks:
+      - apim-redis-net
+
+volumes:
+  haproxy-run:
+  haproxy-etc:
+  mysql_data:
+
+networks:
+  apim-redis-net:
+    driver: bridge
